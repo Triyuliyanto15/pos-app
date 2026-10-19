@@ -1,0 +1,239 @@
+{% extends "base.html" %}
+
+{% block content %}
+<style>
+    @media print {
+        body * { visibility: hidden; }
+        #receipt-print-area, #receipt-print-area * { visibility: visible; }
+        #receipt-print-area {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 72mm;
+            font-family: monospace;
+            font-size: 11px;
+            color: #000;
+        }
+    }
+</style>
+
+<div class="row no-print">
+    <!-- Daftar Barang -->
+    <div class="col-md-7">
+        <div class="card shadow-sm mb-3">
+            <div class="card-header bg-white"><h5 class="mb-0">Pilih Barang</h5></div>
+            <div class="card-body">
+                <input type="text" id="search-input" class="form-control mb-3" placeholder="Cari nama barang..." oninput="filterProducts()">
+                <div class="table-responsive" style="max-height: 400px;">
+                    <table class="table table-hover align-middle">
+                        <thead><tr><th>Barang</th><th>Harga</th><th>Stok</th><th>Aksi</th></tr></thead>
+                        <tbody id="product-list"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Keranjang Belanja -->
+    <div class="col-md-5">
+        <div class="card shadow-sm">
+            <div class="card-header bg-primary text-white"><h5 class="mb-0">Keranjang</h5></div>
+            <div class="card-body">
+                <table class="table align-middle">
+                    <thead><tr><th>Barang</th><th>Qty</th><th>Subtotal</th><th></th></tr></thead>
+                    <tbody id="cart-list"></tbody>
+                </table>
+                <hr>
+                <div class="d-flex justify-content-between fs-4 fw-bold mb-2">
+                    <span>Total:</span>
+                    <span id="cart-total">Rp 0</span>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Uang Dibayar (Rp)</label>
+                    <input type="number" id="pay-amount" class="form-control form-control-lg" placeholder="0" oninput="calculateChange()">
+                </div>
+                <div class="d-flex justify-content-between fs-5 mb-2">
+                    <span>Status:</span>
+                    <span id="payment-status-badge" class="badge bg-secondary">Kosong</span>
+                </div>
+                <div class="d-flex justify-content-between fs-5 mb-3">
+                    <span>Kembalian:</span>
+                    <span id="change-amount" class="fw-bold">Rp 0</span>
+                </div>
+                <button class="btn btn-success btn-lg w-100" id="btn-checkout" onclick="checkout()" disabled>Selesaikan & Cetak Struk</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Template Struk Cetak Thermal -->
+<div id="receipt-print-area" class="d-none d-print-block p-1">
+    <div class="text-center mb-1">
+        <h3 class="fw-bold mb-0">Rumatiam</h3>
+        <div>JL. ALU ALU NO. 10 RT 013 RW 07</div>
+        <div>Pulogadung - 085157762735</div>
+        <div>Closed Bill</div>
+    </div>
+    <div style="border-top: 1px dashed #000;" class="my-1"></div>
+    <div>
+        <div>Tgl: <span id="r-date"></span></div>
+        <div>Receipt No: <span id="r-id"></span></div>
+        <div>Cashier: Kasir Utama</div>
+    </div>
+    <div style="border-top: 1px dashed #000;" class="my-1"></div>
+    <table class="w-100" style="font-size: 11px;">
+        <tbody id="r-items"></tbody>
+    </table>
+    <div style="border-top: 1px dashed #000;" class="my-1"></div>
+    <div class="d-flex justify-content-between"><span>Subtotal</span><span id="r-subtotal">0</span></div>
+    <div class="d-flex justify-content-between fs-6 fw-bold"><span>Total</span><span id="r-total">0</span></div>
+    <div class="d-flex justify-content-between"><span>Bayar</span><span id="r-pay">0</span></div>
+    <div class="d-flex justify-content-between fw-bold"><span>Kembali</span><span id="r-change">0</span></div>
+    <div style="border-top: 1px dashed #000;" class="my-1"></div>
+    <div class="text-center my-2">
+        <h2 class="fw-bold mb-0">Queue: <span id="r-queue">0</span></h2>
+    </div>
+    <div class="text-center small mt-1">
+        Terima Kasih Atas Kunjungan Anda!
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let allProducts = [], cart = [];
+    document.addEventListener("DOMContentLoaded", loadProducts);
+
+    function loadProducts() {
+        fetch('/api/products').then(res => res.json()).then(data => {
+            allProducts = data;
+            renderProducts(allProducts);
+        });
+    }
+
+    function renderProducts(products) {
+        const tbody = document.getElementById('product-list');
+        tbody.innerHTML = '';
+        products.forEach(p => {
+            tbody.innerHTML += `
+                <tr>
+                    <td>${p.name}</td>
+                    <td>Rp ${p.sell_price.toLocaleString('id-ID')}</td>
+                    <td><span class="badge ${p.stock > 0 ? 'bg-secondary' : 'bg-danger'}">${p.stock}</span></td>
+                    <td><button class="btn btn-sm btn-primary" onclick="addToCart(${p.id})" ${p.stock <= 0 ? 'disabled' : ''}>+ Tambah</button></td>
+                </tr>`;
+        });
+    }
+
+    function filterProducts() {
+        const q = document.getElementById('search-input').value.toLowerCase();
+        renderProducts(allProducts.filter(p => p.name.toLowerCase().includes(q)));
+    }
+
+    function addToCart(id) {
+        const p = allProducts.find(item => item.id === id);
+        const item = cart.find(c => c.id === id);
+        if (item) {
+            if (item.qty + 1 > p.stock) return alert("Stok tidak mencukupi!");
+            item.qty++;
+        } else {
+            cart.push({ id: p.id, name: p.name, sell_price: p.sell_price, stock: p.stock, qty: 1 });
+        }
+        renderCart();
+    }
+
+    function removeFromCart(id) {
+        cart = cart.filter(c => c.id !== id);
+        renderCart();
+    }
+
+    function renderCart() {
+        const tbody = document.getElementById('cart-list');
+        tbody.innerHTML = '';
+        let total = 0;
+        cart.forEach(i => {
+            const sub = i.sell_price * i.qty;
+            total += sub;
+            tbody.innerHTML += `
+                <tr>
+                    <td>${i.name}</td>
+                    <td>${i.qty}</td>
+                    <td>Rp ${sub.toLocaleString('id-ID')}</td>
+                    <td><button class="btn btn-sm btn-outline-danger" onclick="removeFromCart(${i.id})">&times;</button></td>
+                </tr>`;
+        });
+        document.getElementById('cart-total').innerText = `Rp ${total.toLocaleString('id-ID')}`;
+        calculateChange();
+    }
+
+    function calculateChange() {
+        const pay = parseFloat(document.getElementById('pay-amount').value) || 0;
+        const total = cart.reduce((s, i) => s + (i.sell_price * i.qty), 0);
+        const changeElem = document.getElementById('change-amount');
+        const badgeElem = document.getElementById('payment-status-badge');
+        const btn = document.getElementById('btn-checkout');
+
+        if (cart.length === 0) {
+            btn.disabled = true;
+            changeElem.innerText = "Rp 0";
+            badgeElem.className = "badge bg-secondary";
+            badgeElem.innerText = "Kosong";
+            return;
+        }
+
+        btn.disabled = false;
+        if (pay >= total) {
+            changeElem.innerText = `Rp ${(pay - total).toLocaleString('id-ID')}`;
+            badgeElem.className = "badge bg-success";
+            badgeElem.innerText = "Lunas";
+        } else {
+            changeElem.innerText = "Rp 0";
+            badgeElem.className = "badge bg-warning text-dark";
+            badgeElem.innerText = "Belum Dibayar";
+        }
+    }
+
+    function checkout() {
+        const pay = parseFloat(document.getElementById('pay-amount').value) || 0;
+        fetch('/api/transactions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cart: cart, pay_amount: pay })
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.error) return alert(data.error);
+
+            // Isikan data ke template Struk Thermal
+            document.getElementById('r-date').innerText = new Date().toLocaleString('id-ID');
+            document.getElementById('r-id').innerText = 'RD' + Math.random().toString(36).substring(2, 7).toUpperCase();
+            document.getElementById('r-queue').innerText = data.queue_number;
+
+            let total = cart.reduce((s, i) => s + (i.sell_price * i.qty), 0);
+            document.getElementById('r-subtotal').innerText = total.toLocaleString('id-ID');
+            document.getElementById('r-total').innerText = total.toLocaleString('id-ID');
+            document.getElementById('r-pay').innerText = pay.toLocaleString('id-ID');
+            document.getElementById('r-change').innerText = data.change.toLocaleString('id-ID');
+
+            let itemsHtml = '';
+            cart.forEach(i => {
+                itemsHtml += `
+                    <tr>
+                        <td colspan="2">${i.qty} ${i.name}</td>
+                        <td class="text-end">${(i.sell_price * i.qty).toLocaleString('id-ID')}</td>
+                    </tr>`;
+            });
+            document.getElementById('r-items').innerHTML = itemsHtml;
+
+            // Cetak Otomatis
+            window.print();
+
+            // Reset
+            cart = [];
+            document.getElementById('pay-amount').value = '';
+            renderCart();
+            loadProducts();
+        });
+    }
+</script>
+{% endblock %}
