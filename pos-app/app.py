@@ -34,15 +34,28 @@ def page_laporan():
 
 
 # API GET PRODUCTS
-@app.route("/api/products", methods=["GET"])
+@app.route('/api/products', methods=['GET'])
 def get_products():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM products ORDER BY name ASC;")
+        cursor.execute('SELECT * FROM products ORDER BY name ASC;')
         products = cursor.fetchall()
         cursor.close()
         conn.close()
+        
+        result = []
+        for p in products:
+            item = dict(p)
+            item['buy_price'] = float(item['buy_price'])
+            item['sell_price'] = float(item['sell_price'])
+            result.append(item)
+            
+        return jsonify(result)
+    except Exception as e:
+        print("Database error:", e)
+        # Mengembalikan array kosong jika DB bermasalah agar frontend tidak crash
+        return jsonify([]), 200
 
         # Format ulang nilai numeric ke float agar aman untuk JSON
         result = []
