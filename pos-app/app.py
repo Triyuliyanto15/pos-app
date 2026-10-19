@@ -53,7 +53,7 @@ def get_products():
 
 
 # API POST PRODUCT (TAMBAH)
-@app.route("/api/products", methods=["POST"])
+@app.route("/templates/produk.html", methods=["POST"])
 def add_product():
     try:
         data = request.json
