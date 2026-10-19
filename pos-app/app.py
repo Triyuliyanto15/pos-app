@@ -6,7 +6,7 @@ from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
 
-DATABASE_URL = os.environ.get("postgresql://postgres.mqdjqlorgxjqnxsftiii:Yanto270799*@aws-0-ap-south-1.pooler.supabase.com:6543/postgres")
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 
 def get_db_connection():
@@ -53,7 +53,7 @@ def get_products():
 
 
 # API POST PRODUCT (TAMBAH)
-@app.route("/templates/produk.html", methods=["POST"])
+@app.route("/api/products", methods=["POST"])
 def add_product():
     try:
         data = request.json
