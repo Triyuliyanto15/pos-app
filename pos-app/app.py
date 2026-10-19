@@ -10,7 +10,12 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 
 
 def get_db_connection():
-    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    return psycopg2.connect(
+        DATABASE_URL, 
+        cursor_factory=RealDictCursor, 
+        sslmode='require',
+        connect_timeout=10
+    )
 
 
 @app.route("/")
