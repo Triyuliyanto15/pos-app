@@ -18,9 +18,9 @@ def page_kasir():
     return render_template("index.html")
 
 
-@app.route("/produk")
-def page_produk():
-    return render_template("produk.html")
+@app.route("/products")
+def page_products():
+    return render_template("products.html")
 
 
 @app.route("/laporan")
