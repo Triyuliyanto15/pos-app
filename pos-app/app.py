@@ -6,7 +6,7 @@ from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+DATABASE_URL = os.environ.get("postgresql://postgres.mqdjqlorgxjqnxsftiii:Yanto270799*@aws-0-ap-south-1.pooler.supabase.com:6543/postgres")
 
 
 def get_db_connection():
