@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h3>Kelola Stok Barang</h3>
+    <button class="btn btn-primary" onclick="openAddModal()">+ Tambah Barang</button>
+</div>
+
+<div class="card shadow-sm">
+    <div class="card-body">
+        <table class="table table-striped align-middle">
+            <thead>
+                <tr>
+                    <th>ID</th><th>Nama Barang</th><th>Harga Beli</th><th>Harga Jual</th><th>Stok</th><th>Aksi</th>
+                </tr>
+            </thead>
+            <tbody id="product-table-body"></tbody>
+        </table>
+    </div>
+</div>
+
+<div class="modal fade" id="productModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="modalTitle">Tambah Barang</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="product-form">
+                    <input type="hidden" id="prod-id">
+                    <div class="mb-3"><label class="form-label">Nama Barang</label><input type="text" id="prod-name" class="form-control" required></div>
+                    <div class="mb-3"><label class="form-label">Harga Beli (Rp)</label><input type="number" id="prod-buy" class="form-control" required></div>
+                    <div class="mb-3"><label class="form-label">Harga Jual (Rp)</label><input type="number" id="prod-sell" class="form-control" required></div>
+                    <div class="mb-3"><label class="form-label">Stok</label><input type="number" id="prod-stock" class="form-control" required></div>
+                    <button type="submit" class="btn btn-primary w-100">Simpan</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let productModal;
+    document.addEventListener("DOMContentLoaded", () => {
+        productModal = new bootstrap.Modal(document.getElementById('productModal'));
+        loadProducts();
+        document.getElementById('product-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            saveProduct();
+        });
+    });
+
+    function loadProducts() {
+        fetch('/api/products').then(res => res.json()).then(data => {
+            const tbody = document.getElementById('product-table-body');
+            tbody.innerHTML = '';
+            data.forEach(p => {
+                tbody.innerHTML += `
+                    <tr>
+                        <td>${p.id}</td><td>${p.name}</td>
+                        <td>Rp ${p.buy_price.toLocaleString('id-ID')}</td>
+                        <td>Rp ${p.sell_price.toLocaleString('id-ID')}</td>
+                        <td>${p.stock}</td>
+                        <td>
+                            <button class="btn btn-sm btn-warning me-1" onclick="openEditModal(${p.id}, '${p.name}', ${p.buy_price}, ${p.sell_price}, ${p.stock})">Edit</button>
+                            <button class="btn btn-sm btn-danger" onclick="deleteProduct(${p.id})">Hapus</button>
+                        </td>
+                    </tr>`;
+            });
+        });
+    }
+
+    function openAddModal() {
+        document.getElementById('modalTitle').innerText = 'Tambah Barang';
+        document.getElementById('prod-id').value = '';
+        document.getElementById('product-form').reset();
+        productModal.show();
+    }
+
+    function openEditModal(id, name, buy, sell, stock) {
+        document.getElementById('modalTitle').innerText = 'Edit Barang';
+        document.getElementById('prod-id').value = id;
+        document.getElementById('prod-name').value = name;
+        document.getElementById('prod-buy').value = buy;
+        document.getElementById('prod-sell').value = sell;
+        document.getElementById('prod-stock').value = stock;
+        productModal.show();
+    }
+
+    function saveProduct() {
+        const id = document.getElementById('prod-id').value;
+        const payload = {
+            name: document.getElementById('prod-name').value,
+            buy_price: parseFloat(document.getElementById('prod-buy').value),
+            sell_price: parseFloat(document.getElementById('prod-sell').value),
+            stock: parseInt(document.getElementById('prod-stock').value)
+        };
+        fetch(id ? `/api/products/${id}` : '/api/products', {
+            method: id ? 'PUT' : 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        }).then(() => { productModal.hide(); loadProducts(); });
+    }
+
+    function deleteProduct(id) {
+        if (confirm("Hapus barang ini?")) {
+            fetch(`/api/products/${id}`, { method: 'DELETE' }).then(() => loadProducts());
+        }
+    }
+</script>
+{% endblock %}
