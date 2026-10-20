@@ -1,286 +1,203 @@
 import os
-from datetime import datetime
-from flask import Flask, jsonify, render_template, request
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import json
+from datetime import datetime, date
+from decimal import Decimal
+from flask import Flask, render_template, request, jsonify, redirect, url_for, abort
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import func
+from dotenv import load_dotenv
 
+load_dotenv()
 app = Flask(__name__)
+app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "ganti-secret-key-untuk-produksi")
+database_url = os.getenv("DATABASE_URL", "sqlite:///mie_ayam.db")
+if database_url.startswith("postgres://"):
+    database_url = database_url.replace("postgres://", "postgresql://", 1)
+app.config["SQLALCHEMY_DATABASE_URI"] = database_url
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_pre_ping": True}
+db = SQLAlchemy(app)
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+class Product(db.Model):
+    __tablename__ = "products"
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), nullable=False, unique=True)
+    price = db.Column(db.Integer, nullable=False)
+    active = db.Column(db.Boolean, nullable=False, default=True)
 
+class Order(db.Model):
+    __tablename__ = "orders"
+    id = db.Column(db.Integer, primary_key=True)
+    queue_name = db.Column(db.String(120), nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.now, index=True)
+    payment_received = db.Column(db.Integer, nullable=False, default=0)
+    total = db.Column(db.Integer, nullable=False, default=0)
+    payment_status = db.Column(db.String(20), nullable=False, default="BELUM LUNAS")
+    items = db.relationship("OrderItem", backref="order", cascade="all, delete-orphan", lazy=True)
 
-def get_db_connection():
-    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+class OrderItem(db.Model):
+    __tablename__ = "order_items"
+    id = db.Column(db.Integer, primary_key=True)
+    order_id = db.Column(db.Integer, db.ForeignKey("orders.id"), nullable=False)
+    product_name = db.Column(db.String(120), nullable=False)
+    unit_price = db.Column(db.Integer, nullable=False)
+    quantity = db.Column(db.Integer, nullable=False)
+    subtotal = db.Column(db.Integer, nullable=False)
 
+def rupiah(value):
+    return "Rp" + f"{int(value):,}".replace(",", ".")
+app.jinja_env.filters["rupiah"] = rupiah
 
-@app.route("/")
-def page_kasir():
-    return render_template("index.html")
+DEFAULT_PRODUCTS = [
+    ("Mie Ayam", 16000),
+    ("Mie Ayam Pangsit", 18000),
+    ("Mie Ayam Bakso", 18000),
+    ("Mie Ayam Pangsit Bakso", 22000),
+    ("Pangsit aja", 16000),
+    ("Pangsit Bakso", 18000),
+]
 
+with app.app_context():
+    db.create_all()
+    if Product.query.count() == 0:
+        for name, price in DEFAULT_PRODUCTS:
+            db.session.add(Product(name=name, price=price))
+        db.session.commit()
 
-@app.route("/produk")
-def page_produk():
-    return render_template("produk.html")
+@app.get("/")
+def index():
+    products = Product.query.filter_by(active=True).order_by(Product.name).all()
+    recent_orders = Order.query.order_by(Order.created_at.desc()).limit(8).all()
+    return render_template("index.html", products=products, recent_orders=recent_orders)
 
-
-@app.route("/laporan")
-def page_laporan():
-    return render_template("laporan.html")
-
-
-# API GET PRODUCTS
-@app.route("/api/products", methods=["GET"])
-def get_products():
+@app.post("/orders")
+def create_order():
+    queue_name = request.form.get("queue_name", "").strip()
+    if not queue_name:
+        return "No antrean/nama pelanggan wajib diisi.", 400
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM products ORDER BY name ASC;")
-        products = cursor.fetchall()
-        cursor.close()
-        conn.close()
+        received = max(0, int(request.form.get("payment_received", "0") or 0))
+        cart = json.loads(request.form.get("cart_json", "[]"))
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return "Data pesanan tidak valid.", 400
+    if not isinstance(cart, list) or not cart:
+        return "Pilih minimal satu menu.", 400
+    order = Order(queue_name=queue_name, payment_received=received)
+    total = 0
+    for entry in cart:
+        try:
+            product_id = int(entry.get("product_id"))
+            quantity = int(entry.get("quantity", 0))
+        except (ValueError, TypeError, AttributeError):
+            continue
+        product = db.session.get(Product, product_id)
+        if not product or not product.active or quantity < 1 or quantity > 99:
+            continue
+        subtotal = product.price * quantity
+        total += subtotal
+        order.items.append(OrderItem(product_name=product.name, unit_price=product.price, quantity=quantity, subtotal=subtotal))
+    if not order.items:
+        return "Item pesanan tidak valid.", 400
+    order.total = total
+    order.payment_status = "LUNAS" if received >= total else "BELUM LUNAS"
+    db.session.add(order)
+    db.session.commit()
+    return redirect(url_for("receipt", order_id=order.id))
 
-        # Format ulang nilai numeric ke float agar aman untuk JSON
-        result = []
-        for p in products:
-            item = dict(p)
-            item["buy_price"] = float(item["buy_price"])
-            item["sell_price"] = float(item["sell_price"])
-            result.append(item)
+@app.get("/receipt/<int:order_id>")
+def receipt(order_id):
+    order = db.session.get(Order, order_id)
+    if not order:
+        abort(404)
+    return render_template("receipt.html", order=order, change=max(0, order.payment_received-order.total), shortage=max(0, order.total-order.payment_received))
 
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-# API POST PRODUCT (TAMBAH)
-@app.route("/api/products", methods=["POST"])
-def add_product():
+@app.get("/laporan")
+def laporan():
+    today = date.today()
+    day_value = request.args.get("tanggal", today.isoformat())
+    month_value = request.args.get("bulan", today.strftime("%Y-%m"))
     try:
-        data = request.json
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO products (name, buy_price, sell_price, stock) VALUES"
-            " (%s, %s, %s, %s);",
-            (
-                data.get("name"),
-                float(data.get("buy_price", 0)),
-                float(data.get("sell_price", 0)),
-                int(data.get("stock", 0)),
-            ),
-        )
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return jsonify({"message": "Produk berhasil ditambahkan"})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-# API PUT PRODUCT (EDIT)
-@app.route("/api/products/<int:product_id>", methods=["PUT"])
-def update_product(product_id):
+        selected_day = date.fromisoformat(day_value)
+    except ValueError:
+        selected_day = today
     try:
-        data = request.json
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE products SET name = %s, buy_price = %s, sell_price = %s,"
-            " stock = %s WHERE id = %s;",
-            (
-                data.get("name"),
-                float(data.get("buy_price", 0)),
-                float(data.get("sell_price", 0)),
-                int(data.get("stock", 0)),
-                product_id,
-            ),
-        )
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return jsonify({"message": "Produk berhasil diperbarui"})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        selected_month = datetime.strptime(month_value, "%Y-%m").date()
+    except ValueError:
+        selected_month = today
+    day_start = datetime.combine(selected_day, datetime.min.time())
+    day_end = datetime.combine(selected_day, datetime.max.time())
+    month_start = datetime(selected_month.year, selected_month.month, 1)
+    if selected_month.month == 12:
+        month_end = datetime(selected_month.year + 1, 1, 1)
+    else:
+        month_end = datetime(selected_month.year, selected_month.month + 1, 1)
+    daily_orders = Order.query.filter(Order.created_at >= day_start, Order.created_at <= day_end).order_by(Order.created_at.desc()).all()
+    monthly_orders = Order.query.filter(Order.created_at >= month_start, Order.created_at < month_end).order_by(Order.created_at.desc()).all()
+    daily_total = sum(o.total for o in daily_orders)
+    daily_paid = sum(min(o.payment_received, o.total) for o in daily_orders)
+    monthly_total = sum(o.total for o in monthly_orders)
+    monthly_paid = sum(min(o.payment_received, o.total) for o in monthly_orders)
+    return render_template("reports.html", selected_day=selected_day.isoformat(), selected_month=selected_month.strftime("%Y-%m"),
+        daily_orders=daily_orders, monthly_orders=monthly_orders, daily_total=daily_total, daily_paid=daily_paid,
+        monthly_total=monthly_total, monthly_paid=monthly_paid)
 
+# API JSON
+@app.get("/api/products")
+def api_products():
+    products = Product.query.filter_by(active=True).order_by(Product.name).all()
+    return jsonify([{"id": p.id, "name": p.name, "price": p.price} for p in products])
 
-# API DELETE PRODUCT
-@app.route("/api/products/<int:product_id>", methods=["DELETE"])
-def delete_product(product_id):
+@app.post("/api/products")
+def api_add_product():
+    data = request.get_json(silent=True) or request.form
+    name = str(data.get("name", "")).strip()
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM products WHERE id = %s;", (product_id,))
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return jsonify({"message": "Produk berhasil dihapus"})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        price = int(data.get("price", 0))
+    except (ValueError, TypeError):
+        return jsonify(error="Harga harus berupa angka."), 400
+    if not name or price < 0:
+        return jsonify(error="Nama menu wajib diisi dan harga tidak boleh negatif."), 400
+    if Product.query.filter(func.lower(Product.name) == name.lower()).first():
+        return jsonify(error="Nama menu sudah ada."), 409
+    product = Product(name=name, price=price)
+    db.session.add(product)
+    db.session.commit()
+    return jsonify(id=product.id, name=product.name, price=product.price), 201
 
+@app.get("/api/orders/<int:order_id>")
+def api_order(order_id):
+    order = db.session.get(Order, order_id)
+    if not order:
+        return jsonify(error="Pesanan tidak ditemukan."), 404
+    return jsonify({
+        "id": order.id, "queue_name": order.queue_name, "created_at": order.created_at.isoformat(),
+        "items": [{"name": i.product_name, "price": i.unit_price, "quantity": i.quantity, "subtotal": i.subtotal} for i in order.items],
+        "total": order.total, "payment_received": order.payment_received,
+        "change": max(0, order.payment_received-order.total),
+        "payment_status": order.payment_status
+    })
 
-# API TRANSACTIONS
-@app.route("/api/transactions", methods=["POST"])
-def create_transaction():
+@app.get("/api/reports")
+def api_reports():
+    period = request.args.get("period", "daily")
+    value = request.args.get("date", date.today().isoformat())
     try:
-        data = request.json
-        cart = data.get("cart", [])
-        pay_amount = float(data.get("pay_amount", 0))
+        if period == "monthly":
+            month = datetime.strptime(value[:7], "%Y-%m").date()
+            start = datetime(month.year, month.month, 1)
+            end = datetime(month.year + 1, 1, 1) if month.month == 12 else datetime(month.year, month.month + 1, 1)
+        else:
+            d = date.fromisoformat(value[:10])
+            start, end = datetime.combine(d, datetime.min.time()), datetime.combine(d, datetime.max.time())
+    except ValueError:
+        return jsonify(error="Format date gunakan YYYY-MM-DD (daily) atau YYYY-MM (monthly)."), 400
+    orders = Order.query.filter(Order.created_at >= start, Order.created_at <= end if period != "monthly" else Order.created_at < end).all()
+    return jsonify(period=period, count=len(orders), sales_total=sum(o.total for o in orders),
+                   paid_total=sum(min(o.payment_received, o.total) for o in orders),
+                   unpaid_orders=sum(o.payment_status != "LUNAS" for o in orders))
 
-        if not cart:
-            return jsonify({"error": "Keranjang belanja kosong"}), 400
-
-        total_amount = 0
-        total_profit = 0
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
-        for item in cart:
-            cursor.execute(
-                "SELECT * FROM products WHERE id = %s;", (item["id"],)
-            )
-            product = cursor.fetchone()
-            if not product or product["stock"] < item["qty"]:
-                cursor.close()
-                conn.close()
-                return jsonify({"error": "Stok barang tidak mencukupi"}), 400
-
-            subtotal = float(product["sell_price"]) * item["qty"]
-            profit = (
-                float(product["sell_price"]) - float(product["buy_price"])
-            ) * item["qty"]
-            total_amount += subtotal
-            total_profit += profit
-
-        payment_status = (
-            "Lunas" if pay_amount >= total_amount else "Belum Dibayar"
-        )
-        change_amount = max(0.0, pay_amount - total_amount)
-
-        today_prefix = datetime.now().strftime("%Y-%m-%d")
-        cursor.execute(
-            "SELECT COUNT(*) as count FROM transactions WHERE date LIKE %s;",
-            (f"{today_prefix}%",),
-        )
-        queue_row = cursor.fetchone()
-        queue_number = queue_row["count"] + 1
-        date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        cursor.execute(
-            """
-            INSERT INTO transactions (queue_number, date, total_amount, total_profit, pay_amount, change_amount, payment_status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id;
-        """,
-            (
-                queue_number,
-                date_str,
-                total_amount,
-                total_profit,
-                pay_amount,
-                change_amount,
-                payment_status,
-            ),
-        )
-
-        transaction_id = cursor.fetchone()["id"]
-
-        for item in cart:
-            cursor.execute(
-                "SELECT * FROM products WHERE id = %s;", (item["id"],)
-            )
-            product = cursor.fetchone()
-            subtotal = float(product["sell_price"]) * item["qty"]
-            cursor.execute(
-                """
-                INSERT INTO transaction_details (transaction_id, product_id, product_name, qty, buy_price, sell_price, subtotal)
-                VALUES (%s, %s, %s, %s, %s, %s, %s);
-            """,
-                (
-                    transaction_id,
-                    product["id"],
-                    product["name"],
-                    item["qty"],
-                    product["buy_price"],
-                    product["sell_price"],
-                    subtotal,
-                ),
-            )
-            cursor.execute(
-                "UPDATE products SET stock = stock - %s WHERE id = %s;",
-                (item["qty"], product["id"]),
-            )
-
-        conn.commit()
-        cursor.close()
-        conn.close()
-
-        return jsonify({
-            "message": "Transaksi berhasil diproses",
-            "queue_number": queue_number,
-            "payment_status": payment_status,
-            "change": change_amount,
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-# API REPORTS
-@app.route("/api/reports", methods=["GET"])
-def get_reports():
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM transactions ORDER BY id DESC;")
-        transactions = cursor.fetchall()
-
-        report_list = []
-        total_income = 0
-        total_profit = 0
-
-        for t in transactions:
-            if t["payment_status"] == "Lunas":
-                total_income += float(t["total_amount"])
-                total_profit += float(t["total_profit"])
-
-            cursor.execute(
-                "SELECT product_name, qty, sell_price, subtotal FROM"
-                " transaction_details WHERE transaction_id = %s;",
-                (t["id"],),
-            )
-            details = cursor.fetchall()
-
-            item_list = []
-            for d in details:
-                di = dict(d)
-                di["sell_price"] = float(di["sell_price"])
-                di["subtotal"] = float(di["subtotal"])
-                item_list.append(di)
-
-            report_list.append({
-                "id": t["id"],
-                "queue_number": t["queue_number"],
-                "date": t["date"],
-                "total_amount": float(t["total_amount"]),
-                "total_profit": float(t["total_profit"]),
-                "pay_amount": float(t["pay_amount"]),
-                "change_amount": float(t["change_amount"]),
-                "payment_status": t["payment_status"],
-                "items": item_list,
-            })
-
-        cursor.close()
-        conn.close()
-
-        return jsonify({
-            "summary": {
-                "total_income": total_income,
-                "total_profit": total_profit,
-                "total_transactions": len(transactions),
-            },
-            "transactions": report_list,
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
+@app.get("/health")
+def health():
+    return jsonify(status="ok")
 
 if __name__ == "__main__":
-    app.run()
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=False)
